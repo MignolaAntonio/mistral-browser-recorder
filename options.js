@@ -56,7 +56,6 @@ function download(filename, content, mime) {
   a.href = url;
   a.download = filename;
   document.body.appendChild(a);
-  a.click();
   a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
@@ -69,7 +68,8 @@ async function getRecords() {
 $("exportJsonl").addEventListener("click", async () => {
   const records = await getRecords();
   const day = new Date().toISOString().slice(0, 10);
-  const content = records.map((r) => JSON.stringify(r)).join("\n") + (records.length ? "\n" : "");
+  // Array JSON puro: un unico documento valido, un oggetto per record.
+  const content = JSON.stringify(records, null, 2);
   download("browser-recorder-" + day + ".json", content, "application/json");
 });
 
