@@ -14,38 +14,41 @@ Estensione per Google Chrome (Manifest V3, uso locale in modalità sviluppatore)
 ## Come si usa
 
 1. Apri la pagina che ti interessa.
-2. Clicca l'icona dell'estensione → **Cattura e trascrivi la pagina corrente**.
-3. Lo screenshot JPEG (qualità 85) della scheda visibile viene inviato a Mistral, trascritto, e salvato in locale con metadati.
-4. Consulta lo storico e esporta manualmente dalla pagina **Opzioni** (JSONL e TXT).
+2. Clicca l'icona dell'estensione e scegli:
+   - **Cattura e trascrivi la pagina corrente** — screenshot JPEG (qualità 85) della scheda visibile;
+   - **Cattura a scorrimento (pagina intera)** — scorre la pagina a sezioni (max 15 sezioni, immagine finale max 16000 px), le unisce in un'unica immagine e la analizza; lo scorrimento viene ripristinato alla fine.
+3. In modalità `scrape` (predefinita) non servono screenshot né chiave API: il testo (`innerText`) viene estratto dal DOM della scheda attiva, resta 100% locale e viene salvato con metadati. In modalità `ocr`/`pixtral`/`both` lo screenshot viene inviato a Mistral e trascritto.
+4. Consulta lo storico ed esporta manualmente (un file **JSON**, array di record) dalla pagina **Opzioni**.
 5. (Opzionale) Dal popup premi **Chatta con la pagina**: si apre il side panel e puoi fare domande sull'ultima pagina catturata (Q&A effimero, valido finché il pannello resta aperto; il contesto si aggiorna da solo se catturi un'altra pagina).
 
 ## Configurazione (pagina Opzioni)
 
 - **Chiave API Mistral**: salvata in `chrome.storage.local`, mai hardcodata.
 - **Modalità di analisi**:
-  - `ocr` (default): endpoint `POST https://api.mistral.ai/v1/ocr` con modello `mistral-ocr-latest`, estrae il testo della pagina;
+  - `scrape` (default): estrazione testo diretta dal DOM via `chrome.scripting` sulla scheda attiva — **locale, senza chiave API, nessuna chiamata esterna** (max 150.000 caratteri);
+  - `ocr`: endpoint `POST https://api.mistral.ai/v1/ocr` con modello `mistral-ocr-latest`, estrae il testo dello screenshot;
   - `pixtral`: `POST https://api.mistral.ai/v1/chat/completions` con modello multimodale (default `pixtral-12b-2409`, modificabile) e prompt di trascrizione in italiano;
   - `both`: entrambe, concatenate.
 - **Modello chat** (side panel): default `mistral-small-latest`, usato per le domande sull'ultima pagina catturata.
-- **Esporta JSONL / TXT** e **Svuota archivio**: esportazione manuale, niente download automatici.
+- **Esporta JSON** e **Svuota archivio**: esportazione manuale, niente download automatici.
 
 ## Architettura
 
 ```
 browser-recorder/
-├── manifest.json      MV3: permissions tabs, storage, activeTab, sidePanel + host api.mistral.ai
+├── manifest.json      MV3: permissions tabs, storage, activeTab, scripting, sidePanel + host api.mistral.ai
 ├── mistral.js         modulo ES condiviso: fetch con retry/backoff + chiamate OCR/Pixtral/chat a Mistral
 ├── background.js      service worker (ES module): gestisce "capture", chiama mistral.js, salva in storage.local
-├── popup.html/.css/.js     pulsante di cattura, apertura side panel, stato, contatori
+├── popup.html/.css/.js     pulsanti di cattura (vista / pagina intera), apertura side panel, stato, contatori
 ├── chat.html/.css/.js      side panel "Chatta con la pagina": Q&A effimero sull'ultimo record
 ├── options.html/.css/.js   chiave API, modelli, modalità, storico, export manuale
 └── README.md
 ```
 
-- **Permessi e perché**: `tabs` per leggere URL/titolo della scheda attiva; `storage` per impostazioni e archivio locale; `activeTab` perché la cattura `chrome.tabs.captureVisibleTab` è consentita sulla scheda attiva solo dopo che l'utente ha invocato l'estensione (il click sul popup); `sidePanel` solo per aprire il pannello chat su click dell'utente. `host_permissions` è limitato a `https://api.mistral.ai/*`, unico dominio esterno contattato. **Non** servono `<all_urls>`, `scripting` né `downloads`: nessun content script viene iniettato nelle pagine e l'export avviene via blob nel browser, su richiesta.
-- **Flusso cattura**: popup → `chrome.runtime.sendMessage({type:"capture"})` → service worker: validazioni (chiave, scheda attiva, incognito, scheme, blacklist hard-coded) → `captureVisibleTab` → `mistral.js` (fetch con retry/backoff) → salvataggio record in `chrome.storage.local`.
+- **Permessi e perché**: `tabs` per leggere URL/titolo della scheda attiva; `storage` per impostazioni e archivio locale; `activeTab` perché `captureVisibleTab` e `chrome.scripting.executeScript` sulla scheda attiva sono consentiti solo dopo che l'utente ha invocato l'estensione (il click sul popup); `scripting` serve solo per la modalità scrape (lettura `innerText`) e per lo scroll nella cattura a pagina intera — niente content script permanenti, niente iniezione in altre schede; `sidePanel` solo per aprire il pannello chat su click. `host_permissions` è limitato a `https://api.mistral.ai/*`, unico dominio esterno contattato (e solo in modalità OCR/Pixtral). **Non** servono `<all_urls>` né `downloads`: l'export avviene via blob nel browser, su richiesta.
+- **Flusso cattura**: popup → `chrome.runtime.sendMessage({type:"capture", fullPage})` → service worker: validazioni (scheda attiva, incognito, scheme, blacklist hard-coded) → modalità `scrape`: `scrapePageText` (solo DOM, nessuna API) · modalità API: `captureVisibleTab` (normale o a scorrimento) → `mistral.js` (fetch con retry/backoff) → salvataggio record in `chrome.storage.local`.
 - **Flusso chat**: side panel → legge l'ultimo record da `chrome.storage.local` → `mistral.js` `chatCompletion` con system prompt + contesto (max 60k caratteri) + storico (max 20 messaggi). Lo storico è solo in memoria: chiudendo il pannello si azzera.
-- **Record salvato**: `{ id, ts (ISO), url, title, hostname, mode, model, text }`. Lo screenshot **non** viene conservato, solo la trascrizione testuale.
+- **Record salvato**: `{ id, ts (ISO), url, title, hostname, mode, model, fullPage, sections, truncated, text }`. Lo screenshot **non** viene conservato, solo il testo estratto/trascritto.
 - **Errori API**: 401/403 → messaggio "chiave non valida" nel popup; 429/5xx → retry con backoff esponenziale (fino a 3 tentativi, rispettando `Retry-After`); altri errori mostrati senza interrompere nulla (non esiste un loop da interrompere).
 - **Niente service-worker "riavviabile" da gestire**: non essendoci loop, il service worker si riattiva da solo a ogni click del popup.
 
@@ -68,9 +71,9 @@ browser-recorder/
 3. **Dominio bloccato**: vai su una pagina di login (es. accounts.google.com) e premi cattura → "Dominio bloccato", nessun record.
 4. **Pagina di sistema**: su `chrome://extensions` → errore di cattura, nessun record.
 5. **Pagina normale**: cattura una pagina di noticias → record salvato, visibile nello storico delle opzioni.
-6. **Export**: esporta JSONL e TXT, verifica che i file contengano i metadati + testo; poi "Svuota archivio".
+6. **Export**: esporta il JSON, verifica che contenga i record con metadati + testo; poi "Svuota archivio".
 7. **Ricarica estensione**: premi "Ricarica" in `chrome://extensions`, verifica che popup e storico siano intatti (dati in `storage.local`).
 
 ## Collegare l'archivio a un assistente
 
-Esporta lo storico in JSONL dalle opzioni e caricalo dove preferisci (una chat con un modello, uno strumento RAG locale, un notebook): ogni riga contiene timestamp, URL, titolo, hostname e testo trascritto, quindi puoi chiedere cose del tipo "cosa ho letto oggi su X?" o "riassumi gli articoli aperti nel pomeriggio". Finché non esporti e non partage tu stesso il file, i dati restano solo sul tuo computer (a parte lo screenshot inviato a Mistral al momento della singola cattura scelta da te).
+Esporta lo storico in JSON dalle opzioni e caricalo dove preferisci (una chat con un modello, uno strumento RAG locale, un notebook): ogni elemento contiene timestamp, URL, titolo, hostname e testo estratto/trascritto, quindi puoi chiedere cose del tipo "cosa ho letto oggi su X?" o "riassumi gli articoli aperti nel pomeriggio". Finché non esporti e non partage tu stesso il file, i dati restano solo sul tuo computer (a parte lo screenshot inviato a Mistral al momento della singola cattura scelta da te).

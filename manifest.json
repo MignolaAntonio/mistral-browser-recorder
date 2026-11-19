@@ -1,12 +1,13 @@
 {
   "manifest_version": 3,
   "name": "Browser Recorder (on-demand)",
-  "version": "1.2.0",
-  "description": "Cattura e trascrive la pagina corrente SOLO su richiesta esplicita dell'utente, usando esclusivamente le API di Mistral. Nessuna registrazione continua in background.",
+  "version": "1.3.0",
+  "description": "Cattura/estrae il contenuto della pagina corrente SOLO su richiesta esplicita dell'utente: modalità scrape locale (senza API) oppure trascrizione via API Mistral. Nessuna registrazione continua in background.",
   "permissions": [
     "tabs",
     "storage",
     "activeTab",
+    "scripting",
     "sidePanel"
   ],
   "host_permissions": [
