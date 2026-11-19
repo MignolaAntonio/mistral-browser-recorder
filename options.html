@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="options.css">
+  <title>Browser Recorder — Opzioni</title>
+</head>
+<body>
+  <h1>Browser Recorder — Opzioni</h1>
+
+  <section>
+    <h2>Chiave API Mistral</h2>
+    <p class="hint">La chiave viene salvata solo in <code>chrome.storage.local</code> e viene inviata esclusivamente a <code>https://api.mistral.ai</code>. Non viene mai hardcodata né inviata altrove.</p>
+    <label>
+      Chiave API
+      <input type="password" id="apiKey" placeholder="sk-…" autocomplete="off">
+    </label>
+    <label class="inline"><input type="checkbox" id="showKey"> Mostra chiave</label>
+  </section>
+
+  <section>
+    <h2>Modalità di analisi</h2>
+    <label>
+      Modalità
+      <select id="mode">
+        <option value="ocr">ocr — estrazione testo (mistral-ocr-latest)</option>
+        <option value="pixtral">pixtral — descrizione visiva multimodale</option>
+        <option value="both">both — entrambe, concatenate</option>
+      </select>
+    </label>
+    <label>
+      Modello Pixtral
+      <input type="text" id="pixtralModel" placeholder="pixtral-12b-2409">
+    </label>
+    <button id="save">Salva impostazioni</button>
+    <span id="saveStatus" class="hint"></span>
+  </section>
+
+  <section>
+    <h2>Archivio locale</h2>
+    <p class="hint">Elementi salvati: <strong id="recordCount">0</strong>. La cattura avviene SOLO quando premi il pulsante nel popup: nessun loop automatico, nessuna registrazione continua. Su domini sensibili (banca, pagamenti, login, password manager, webmail) la cattura è bloccata a livello di codice.</p>
+    <div class="row">
+      <button id="exportJsonl">Esporta JSONL</button>
+      <button id="exportTxt">Esporta TXT</button>
+      <button id="clear" class="danger">Svuota archivio</button>
+    </div>
+    <div id="records" class="records"></div>
+  </section>
+
+  <script src="options.js"></script>
+</body>
+</html>
