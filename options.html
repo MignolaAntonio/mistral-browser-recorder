@@ -10,7 +10,7 @@
 
   <section>
     <h2>Chiave API Mistral</h2>
-    <p class="hint">La chiave viene salvata solo in <code>chrome.storage.local</code> e viene inviata esclusivamente a <code>https://api.mistral.ai</code>. Non viene mai hardcodata né inviata altrove.</p>
+    <p class="hint">La chiave viene salvata solo in <code>chrome.storage.local</code> e viene inviata esclusivamente a <code>https://api.mistral.ai</code>. Non viene mai hardcodata né inviata altrove. La chiave serve solo per le modalità OCR e Pixtral: la modalità scrape funziona senza chiave.</p>
     <label>
       Chiave API
       <input type="password" id="apiKey" placeholder="sk-…" autocomplete="off">
@@ -23,7 +23,8 @@
     <label>
       Modalità
       <select id="mode">
-        <option value="ocr">ocr — estrazione testo (mistral-ocr-latest)</option>
+        <option value="scrape">scrape — estrazione testo diretta dal DOM (locale, senza API, predefinita)</option>
+        <option value="ocr">ocr — estrazione testo via API (mistral-ocr-latest)</option>
         <option value="pixtral">pixtral — descrizione visiva multimodale</option>
         <option value="both">both — entrambe, concatenate</option>
       </select>

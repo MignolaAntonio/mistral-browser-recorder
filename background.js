@@ -1,6 +1,7 @@
 const MISTRAL_BASE = "https://api.mistral.ai/v1";
 const OCR_MODEL = "mistral-ocr-latest";
 const DEFAULT_PIXTRAL_MODEL = "pixtral-12b-2409";
+const DEFAULT_MODE = "scrape";
 const CAPTURE_QUALITY = 85;
 
 // Limiti di sicurezza per la cattura a scorrimento (pagina intera):
@@ -8,6 +9,9 @@ const CAPTURE_QUALITY = 85;
 const MAX_SCROLL_SECTIONS = 15;
 const SCROLL_WAIT_MS = 450;
 const MAX_STITCH_HEIGHT_PX = 16000;
+
+// Limite di testo estratto in modalità scrape (caratteri).
+const SCRAPE_MAX_CHARS = 150000;
 
 const PIXTRAL_PROMPT =
   "Sei un assistente che analizza schermate di pagine web. Trascrivi in italiano, in modo conciso e strutturato, il contenuto di questa schermata: riporta il testo leggibile, i titoli, le sezioni principali e gli elementi rilevanti (avvisi, pulsanti, moduli). Non inventare contenuti non presenti nell'immagine.";
@@ -36,7 +40,7 @@ async function getStore() {
   const data = await chrome.storage.local.get(["settings", "records", "stats", "lastStatus"]);
   return {
     settings: Object.assign(
-      { apiKey: "", mode: "ocr", pixtralModel: DEFAULT_PIXTRAL_MODEL },
+      { apiKey: "", mode: DEFAULT_MODE, pixtralModel: DEFAULT_PIXTRAL_MODEL },
       data.settings || {}
     ),
     records: Array.isArray(data.records) ? data.records : [],
@@ -140,6 +144,36 @@ async function mistralPixtral(apiKey, model, dataUrl) {
   return String((choice && choice.message && choice.message.content) || "").trim();
 }
 
+// ---------- Modalita' scrape: estrazione testo diretta dal DOM ----------
+
+// Estrae il testo della pagina con chrome.scripting: nessuno screenshot,
+// nessuna chiamata API, la pagina gira completamente nel browser.
+async function scrapePageText(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const desc = document.querySelector('meta[name="description"]');
+      return {
+        title: document.title || "",
+        description: (desc && desc.content) || "",
+        text: (document.scrollingElement || document.body).innerText || ""
+      };
+    }
+  });
+  const r = results && results[0] && results[0].result;
+  if (!r || typeof r.text !== "string" || !r.text.trim()) {
+    throw new Error("La pagina non restituisce testo estraibile (potrebbe essere un PDF, un canvas o una pagina dinamica vuota).");
+  }
+  let text = r.text.trim();
+  let truncated = false;
+  if (text.length > SCRAPE_MAX_CHARS) {
+    text = text.slice(0, SCRAPE_MAX_CHARS);
+    truncated = true;
+  }
+  const header = (r.description ? "Descrizione: " + r.description + "\n\n" : "");
+  return { text: header + text, title: r.title, truncated };
+}
+
 // ---------- Cattura a scorrimento (pagina intera) ----------
 
 async function getScrollMetrics(tabId) {
@@ -190,7 +224,7 @@ async function restoreScroll(tabId, x, y) {
   }
 }
 
-// Offset (px CSS) a cui scorrere per ogni sezione. L'ultima sezione è
+// Offset (px CSS) a cui scorrere per ogni sezione. L'ultima sezione e'
 // ancorata al fondo pagina in modo da coprirne la coda, anche se questo
 // comporta una sovrapposizione con la sezione precedente.
 function computeSectionOffsets(scrollHeight, viewportHeight) {
@@ -216,7 +250,6 @@ async function stitchBitmaps(dataUrls, offsets, viewportHeight) {
     bitmaps.push(await createImageBitmap(blob));
   }
   const first = bitmaps[0];
-  // Rapporto tra pixel dell'immagine catturata e px CSS del viewport (devicePixelRatio).
   const scaleY = first.height / viewportHeight;
   const lastOffset = offsets[offsets.length - 1];
   const stitchHeight = Math.round((lastOffset + viewportHeight) * scaleY);
@@ -250,7 +283,6 @@ async function stitchBitmaps(dataUrls, offsets, viewportHeight) {
 async function captureFullPage(tabId) {
   const metrics = await getScrollMetrics(tabId);
   if (metrics.scrollHeight <= metrics.viewportHeight) {
-    // Pagina più corta del viewport: nessuno scorrimento necessario.
     const dataUrl = await chrome.tabs.captureVisibleTab({ format: "jpeg", quality: CAPTURE_QUALITY });
     return { dataUrl, sections: 1, truncated: false };
   }
@@ -275,11 +307,6 @@ async function captureFullPage(tabId) {
 
 async function validateActiveTab() {
   const store = await getStore();
-  if (!store.settings.apiKey) {
-    await setStatus("error", "Nessuna chiave API configurata: apri le opzioni dell'estensione e inseriscila.");
-    return { ok: false, error: "no-api-key" };
-  }
-
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
   const tab = tabs && tabs[0];
   if (!tab || !tab.url) {
@@ -306,7 +333,7 @@ async function validateActiveTab() {
     await setStatus("error", "Dominio bloccato per sicurezza (banca, pagamenti, login, password manager, webmail): nessuna cattura effettuata.");
     return { ok: false, error: "blocked-domain", hostname: url.hostname };
   }
-  return { ok: true, tab, url, settings: store.settings, store };
+  return { ok: true, tab, url, settings: store.settings };
 }
 
 async function handleCapture(fullPage) {
@@ -315,6 +342,46 @@ async function handleCapture(fullPage) {
   const tab = v.tab;
   const url = v.url;
   const settings = v.settings;
+
+  // Modalita' scrape: estrazione testo diretta, locale, senza chiave API
+  // e senza screenshot (inner Tex copre gia' l'intera pagina, anche se non
+  // visibile: lo scorrimento non serve).
+  if (settings.mode === "scrape") {
+    await setStatus("capturing", "Estrazione del testo della pagina (scrape locale)…");
+    let scraped;
+    try {
+      scraped = await scrapePageText(tab.id);
+    } catch (e) {
+      await setStatus("error", e.message || "Estrazione non riuscita.");
+      return { ok: false, error: "scrape-failed", message: e.message };
+    }
+    const record = {
+      id: (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now()),
+      ts: new Date().toISOString(),
+      url: tab.url,
+      title: tab.title || scraped.title || "",
+      hostname: url.hostname,
+      mode: "scrape",
+      model: "local-scrape (nessuna API)",
+      fullPage: true,
+      sections: 1,
+      truncated: scraped.truncated,
+      text: scraped.text
+    };
+    const store = await getStore();
+    store.records.push(record);
+    store.stats.totalCaptured += 1;
+    store.stats.totalTranscribed += 1;
+    await chrome.storage.local.set({ records: store.records, stats: store.stats });
+    await setStatus("ok", "Testo estratto e salvato in locale (" + scraped.text.length + " caratteri" + (scraped.truncated ? ", troncato al limite" : "") + "). Nessuna API chiamata.");
+    return { ok: true, record };
+  }
+
+  // Modalita' con API Mistral: serve la chiave.
+  if (!settings.apiKey) {
+    await setStatus("error", "Nessuna chiave API configurata: apri le opzioni dell'estensione e inseriscila (oppure usa la modalita' scrape, che non richiede chiave).");
+    return { ok: false, error: "no-api-key" };
+  }
 
   let dataUrl;
   let captureMeta = { sections: 1, truncated: false };
@@ -338,7 +405,7 @@ async function handleCapture(fullPage) {
     }
   }
 
-  await setStatus("analyzing", "Trascrizione in corso via Mistral (modalita': " + settings.mode + "): (" + captureMeta.sections + " sezione" + (captureMeta.sections > 1 ? "i" : "") + ")…");
+  await setStatus("analyzing", "Trascrizione in corso via Mistral (modalita': " + settings.mode + ", " + captureMeta.sections + " sezione" + (captureMeta.sections > 1 ? "i" : "") + ")…");
   const models = [];
   let text = "";
   try {

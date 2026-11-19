@@ -3,7 +3,7 @@ const $ = (id) => document.getElementById(id);
 async function load() {
   const data = await chrome.storage.local.get(["settings", "records", "stats"]);
   const settings = Object.assign(
-    { apiKey: "", mode: "ocr", pixtralModel: "pixtral-12b-2409" },
+    { apiKey: "", mode: "scrape", pixtralModel: "pixtral-12b-2409" },
     data.settings || {}
   );
   $("apiKey").value = settings.apiKey;

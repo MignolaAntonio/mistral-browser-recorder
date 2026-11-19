@@ -6,10 +6,14 @@ const countsEl = document.getElementById("counts");
 const optionsBtn = document.getElementById("optionsBtn");
 const chatBtn = document.getElementById("chatBtn");
 
+let currentMode = null;
+
 function renderState(state) {
   const s = state.lastStatus || { state: "idle", message: "Pronto." };
-  if (!state.settings.hasApiKey) {
-    statusEl.textContent = "Nessuna chiave API configurata: apri le opzioni dell'estensione.";
+  currentMode = state.settings.mode;
+  const needsApiKey = state.settings.mode && state.settings.mode !== "scrape";
+  if (needsApiKey && !state.settings.hasApiKey) {
+    statusEl.textContent = "Nessuna chiave API configurata: apri le opzioni dell'estensione (oppure passa alla modalita' scrape).";
     statusEl.dataset.state = "error";
   } else {
     statusEl.textContent = s.message;
@@ -32,23 +36,26 @@ async function refresh() {
 }
 
 async function runCapture(fullPage) {
-  const btn = fullPage ? captureScrollBtn : captureBtn;
-  if (btn) btn.disabled = true;
+  // In modalita' scrape il testo della pagina intera viene estratto comunque:
+  // i due pulsanti sono equivalenti, fullPage e' ignorato.
+  resultEl.textContent = "";
   captureBtn.disabled = true;
   captureScrollBtn.disabled = true;
-  resultEl.textContent = "";
   statusEl.dataset.state = "capturing";
-  statusEl.textContent = fullPage
-    ? "Cattura a scorrimento e analisi in corso…"
-    : "Cattura e analisi in corso…";
+  statusEl.textContent = (currentMode === "scrape")
+    ? "Estrazione del testo della pagina in corso…"
+    : fullPage
+      ? "Cattura a scorrimento e analisi in corso…"
+      : "Cattura e analisi in corso…";
   try {
     const res = await chrome.runtime.sendMessage({ type: "capture", fullPage: Boolean(fullPage) });
     if (res && res.ok) {
       const r = res.record;
       resultEl.textContent =
         "Salvato: " + r.hostname + " — " + (r.title || "(senza titolo)") +
-        " (" + r.text.length + " caratteri, modello: " + r.model +
-        (r.sections > 1 ? ", " + r.sections + " sezioni" + (r.truncated ? " (pagina troncata)" : "") : "") + ")";
+        " (" + r.text.length + " caratteri, " + (r.mode === "scrape" ? "scrape locale" : "modello: " + r.model) +
+        (r.sections > 1 ? ", " + r.sections + " sezioni" : "") +
+        (r.truncated ? " — troncato" : "") + ")";
     } else {
       resultEl.textContent =
         "Operazione non riuscita: " + ((res && (res.message || res.error)) || "errore sconosciuto");
