@@ -1,6 +1,5 @@
-const MISTRAL_BASE = "https://api.mistral.ai/v1";
-const OCR_MODEL = "mistral-ocr-latest";
-const DEFAULT_PIXTRAL_MODEL = "pixtral-12b-2409";
+import { OCR_MODEL, DEFAULT_PIXTRAL_MODEL, ocrImage, describeImage } from "./mistral.js";
+
 const CAPTURE_QUALITY = 85;
 
 const PIXTRAL_PROMPT =
@@ -20,10 +19,6 @@ const BLOCKED_HOST_SUBSTRINGS = [
 function isBlockedHost(hostname) {
   const h = (hostname || "").toLowerCase();
   return BLOCKED_HOST_SUBSTRINGS.some((s) => h.includes(s));
-}
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 async function getStore() {
@@ -57,81 +52,6 @@ async function getState() {
       hasApiKey: Boolean(store.settings.apiKey)
     }
   };
-}
-
-async function fetchWithRetry(url, options, maxRetries = 3) {
-  let attempt = 0;
-  for (;;) {
-    const res = await fetch(url, options);
-    if (res.status === 401 || res.status === 403) {
-      const err = new Error("Chiave API Mistral non valida o non autorizzata (HTTP " + res.status + ").");
-      err.code = "auth";
-      throw err;
-    }
-    if (res.status === 429 || res.status >= 500) {
-      if (attempt >= maxRetries) {
-        const err = new Error("API Mistral non disponibile (HTTP " + res.status + ") dopo " + (maxRetries + 1) + " tentativi.");
-        err.code = "api";
-        throw err;
-      }
-      const retryAfter = Number(res.headers.get("Retry-After"));
-      const delay = Number.isFinite(retryAfter) && retryAfter > 0
-        ? retryAfter * 1000
-        : Math.min(1000 * 2 ** attempt, 8000);
-      await sleep(delay);
-      attempt += 1;
-      continue;
-    }
-    if (!res.ok) {
-      const body = await res.text().catch(() => "");
-      const err = new Error("Errore API Mistral (HTTP " + res.status + "): " + body.slice(0, 200));
-      err.code = "api";
-      throw err;
-    }
-    return res;
-  }
-}
-
-async function mistralOcr(apiKey, dataUrl) {
-  const res = await fetchWithRetry(MISTRAL_BASE + "/ocr", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + apiKey,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: OCR_MODEL,
-      document: { type: "image_url", image_url: dataUrl }
-    })
-  });
-  const json = await res.json();
-  const pages = Array.isArray(json.pages) ? json.pages : [];
-  return pages.map((p) => p.markdown || "").join("\n\n").trim();
-}
-
-async function mistralPixtral(apiKey, model, dataUrl) {
-  const res = await fetchWithRetry(MISTRAL_BASE + "/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: "Bearer " + apiKey,
-      "Content-Type": "application/json"
-    },
-    body: JSON.stringify({
-      model: model || DEFAULT_PIXTRAL_MODEL,
-      messages: [
-        {
-          role: "user",
-          content: [
-            { type: "text", text: PIXTRAL_PROMPT },
-            { type: "image_url", image_url: { url: dataUrl } }
-          ]
-        }
-      ]
-    })
-  });
-  const json = await res.json();
-  const choice = json.choices && json.choices[0];
-  return String((choice && choice.message && choice.message.content) || "").trim();
 }
 
 async function handleCapture() {
@@ -184,11 +104,11 @@ async function handleCapture() {
   let text = "";
   try {
     if (settings.mode === "ocr" || settings.mode === "both") {
-      text += await mistralOcr(settings.apiKey, dataUrl);
+      text += await ocrImage(settings.apiKey, dataUrl);
       models.push(OCR_MODEL);
     }
     if (settings.mode === "pixtral" || settings.mode === "both") {
-      const t = await mistralPixtral(settings.apiKey, settings.pixtralModel, dataUrl);
+      const t = await describeImage(settings.apiKey, settings.pixtralModel, dataUrl, PIXTRAL_PROMPT);
       text += (text ? "\n\n---\n\n" : "") + t;
       models.push(settings.pixtralModel || DEFAULT_PIXTRAL_MODEL);
     }

@@ -3,12 +3,13 @@ const $ = (id) => document.getElementById(id);
 async function load() {
   const data = await chrome.storage.local.get(["settings", "records", "stats"]);
   const settings = Object.assign(
-    { apiKey: "", mode: "ocr", pixtralModel: "pixtral-12b-2409" },
+    { apiKey: "", mode: "ocr", pixtralModel: "pixtral-12b-2409", chatModel: "mistral-small-latest" },
     data.settings || {}
   );
   $("apiKey").value = settings.apiKey;
   $("mode").value = settings.mode;
   $("pixtralModel").value = settings.pixtralModel;
+  $("chatModel").value = settings.chatModel;
   $("recordCount").textContent = String((data.records || []).length);
   renderRecords(data.records || []);
 }
@@ -39,7 +40,8 @@ $("save").addEventListener("click", async () => {
   const settings = {
     apiKey: $("apiKey").value.trim(),
     mode: $("mode").value,
-    pixtralModel: $("pixtralModel").value.trim() || "pixtral-12b-2409"
+    pixtralModel: $("pixtralModel").value.trim() || "pixtral-12b-2409",
+    chatModel: $("chatModel").value.trim() || "mistral-small-latest"
   };
   await chrome.storage.local.set({ settings });
   $("saveStatus").textContent = "Impostazioni salvate.";

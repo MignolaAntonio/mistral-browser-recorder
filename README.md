@@ -17,6 +17,7 @@ Estensione per Google Chrome (Manifest V3, uso locale in modalità sviluppatore)
 2. Clicca l'icona dell'estensione → **Cattura e trascrivi la pagina corrente**.
 3. Lo screenshot JPEG (qualità 85) della scheda visibile viene inviato a Mistral, trascritto, e salvato in locale con metadati.
 4. Consulta lo storico e esporta manualmente dalla pagina **Opzioni** (JSONL e TXT).
+5. (Opzionale) Dal popup premi **Chatta con la pagina**: si apre il side panel e puoi fare domande sull'ultima pagina catturata (Q&A effimero, valido finché il pannello resta aperto; il contesto si aggiorna da solo se catturi un'altra pagina).
 
 ## Configurazione (pagina Opzioni)
 
@@ -25,21 +26,25 @@ Estensione per Google Chrome (Manifest V3, uso locale in modalità sviluppatore)
   - `ocr` (default): endpoint `POST https://api.mistral.ai/v1/ocr` con modello `mistral-ocr-latest`, estrae il testo della pagina;
   - `pixtral`: `POST https://api.mistral.ai/v1/chat/completions` con modello multimodale (default `pixtral-12b-2409`, modificabile) e prompt di trascrizione in italiano;
   - `both`: entrambe, concatenate.
+- **Modello chat** (side panel): default `mistral-small-latest`, usato per le domande sull'ultima pagina catturata.
 - **Esporta JSONL / TXT** e **Svuota archivio**: esportazione manuale, niente download automatici.
 
 ## Architettura
 
 ```
 browser-recorder/
-├── manifest.json      MV3: permissions tabs, storage, activeTab + host api.mistral.ai
-├── background.js      service worker: gestisce la richiesta "capture", chiama Mistral, salva in storage.local
-├── popup.html/.css/.js     pulsante di cattura, stato, contatori
-├── options.html/.css/.js   chiave API, modalità, storico, export manuale
+├── manifest.json      MV3: permissions tabs, storage, activeTab, sidePanel + host api.mistral.ai
+├── mistral.js         modulo ES condiviso: fetch con retry/backoff + chiamate OCR/Pixtral/chat a Mistral
+├── background.js      service worker (ES module): gestisce "capture", chiama mistral.js, salva in storage.local
+├── popup.html/.css/.js     pulsante di cattura, apertura side panel, stato, contatori
+├── chat.html/.css/.js      side panel "Chatta con la pagina": Q&A effimero sull'ultimo record
+├── options.html/.css/.js   chiave API, modelli, modalità, storico, export manuale
 └── README.md
 ```
 
-- **Permessi e perché**: `tabs` per leggere URL/titolo della scheda attiva; `storage` per impostazioni e archivio locale; `activeTab` perché la cattura `chrome.tabs.captureVisibleTab` è consentita sulla scheda attiva solo dopo che l'utente ha invocato l'estensione (il click sul popup). `host_permissions` è limitato a `https://api.mistral.ai/*`, unico dominio esterno contattato. **Non** servono `<all_urls>` né `downloads`: l'export avviene via blob nel browser, su richiesta.
-- **Flusso**: popup → `chrome.runtime.sendMessage({type:"capture"})` → service worker: validazioni (chiave, scheda attiva, incognito, scheme, blacklist hard-coded) → `captureVisibleTab` → `fetch` a Mistral con retry/backoff → salvataggio record in `chrome.storage.local`.
+- **Permessi e perché**: `tabs` per leggere URL/titolo della scheda attiva; `storage` per impostazioni e archivio locale; `activeTab` perché la cattura `chrome.tabs.captureVisibleTab` è consentita sulla scheda attiva solo dopo che l'utente ha invocato l'estensione (il click sul popup); `sidePanel` solo per aprire il pannello chat su click dell'utente. `host_permissions` è limitato a `https://api.mistral.ai/*`, unico dominio esterno contattato. **Non** servono `<all_urls>`, `scripting` né `downloads`: nessun content script viene iniettato nelle pagine e l'export avviene via blob nel browser, su richiesta.
+- **Flusso cattura**: popup → `chrome.runtime.sendMessage({type:"capture"})` → service worker: validazioni (chiave, scheda attiva, incognito, scheme, blacklist hard-coded) → `captureVisibleTab` → `mistral.js` (fetch con retry/backoff) → salvataggio record in `chrome.storage.local`.
+- **Flusso chat**: side panel → legge l'ultimo record da `chrome.storage.local` → `mistral.js` `chatCompletion` con system prompt + contesto (max 60k caratteri) + storico (max 20 messaggi). Lo storico è solo in memoria: chiudendo il pannello si azzera.
 - **Record salvato**: `{ id, ts (ISO), url, title, hostname, mode, model, text }`. Lo screenshot **non** viene conservato, solo la trascrizione testuale.
 - **Errori API**: 401/403 → messaggio "chiave non valida" nel popup; 429/5xx → retry con backoff esponenziale (fino a 3 tentativi, rispettando `Retry-After`); altri errori mostrati senza interrompere nulla (non esiste un loop da interrompere).
 - **Niente service-worker "riavviabile" da gestire**: non essendoci loop, il service worker si riattiva da solo a ogni click del popup.
