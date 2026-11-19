@@ -70,24 +70,7 @@ $("exportJsonl").addEventListener("click", async () => {
   const records = await getRecords();
   const day = new Date().toISOString().slice(0, 10);
   const content = records.map((r) => JSON.stringify(r)).join("\n") + (records.length ? "\n" : "");
-  download("browser-recorder-" + day + ".jsonl", content, "application/jsonl");
-});
-
-$("exportTxt").addEventListener("click", async () => {
-  const records = await getRecords();
-  const day = new Date().toISOString().slice(0, 10);
-  const txt = records
-    .map((r) =>
-      [
-        "=== " + r.ts + " | " + r.hostname + " | " + (r.title || "") + " | modello: " + r.model + " | modo: " + r.mode,
-        r.url,
-        "",
-        r.text,
-        ""
-      ].join("\n")
-    )
-    .join("\n----------------------------------------\n\n");
-  download("browser-recorder-" + day + ".txt", txt, "text/plain");
+  download("browser-recorder-" + day + ".json", content, "application/json");
 });
 
 $("clear").addEventListener("click", async () => {
