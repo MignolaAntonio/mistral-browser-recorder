@@ -3,6 +3,12 @@ const OCR_MODEL = "mistral-ocr-latest";
 const DEFAULT_PIXTRAL_MODEL = "pixtral-12b-2409";
 const CAPTURE_QUALITY = 85;
 
+// Limiti di sicurezza per la cattura a scorrimento (pagina intera):
+// numero massimo di sezioni catturate e altezza massima dell'immagine finale.
+const MAX_SCROLL_SECTIONS = 15;
+const SCROLL_WAIT_MS = 450;
+const MAX_STITCH_HEIGHT_PX = 16000;
+
 const PIXTRAL_PROMPT =
   "Sei un assistente che analizza schermate di pagine web. Trascrivi in italiano, in modo conciso e strutturato, il contenuto di questa schermata: riporta il testo leggibile, i titoli, le sezioni principali e gli elementi rilevanti (avvisi, pulsanti, moduli). Non inventare contenuti non presenti nell'immagine.";
 
@@ -134,11 +140,142 @@ async function mistralPixtral(apiKey, model, dataUrl) {
   return String((choice && choice.message && choice.message.content) || "").trim();
 }
 
-async function handleCapture() {
-  const store = await getStore();
-  const settings = store.settings;
+// ---------- Cattura a scorrimento (pagina intera) ----------
 
-  if (!settings.apiKey) {
+async function getScrollMetrics(tabId) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: () => {
+      const el = document.scrollingElement || document.documentElement;
+      return {
+        scrollHeight: el.scrollHeight,
+        viewportHeight: window.innerHeight,
+        scrollX: window.scrollX,
+        scrollY: window.scrollY
+      };
+    }
+  });
+  const r = results && results[0] && results[0].result;
+  if (!r || typeof r.scrollHeight !== "number" || typeof r.viewportHeight !== "number") {
+    throw new Error("Impossibile leggere le dimensioni della pagina.");
+  }
+  return r;
+}
+
+async function scrollToOffset(tabId, y) {
+  const results = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: (yy) => {
+      window.scrollTo(0, yy);
+      return window.scrollY;
+    },
+    args: [Math.round(y)]
+  });
+  const scrolledTo = results && results[0] && results[0].result;
+  if (typeof scrolledTo !== "number") {
+    throw new Error("Impossibile scorrere la pagina.");
+  }
+  return scrolledTo;
+}
+
+async function restoreScroll(tabId, x, y) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: (sx, sy) => window.scrollTo(sx, sy),
+      args: [Math.round(x), Math.round(y)]
+    });
+  } catch (e) {
+    // Ripristino best-effort: non fallisce la cattura se non riesce.
+  }
+}
+
+// Offset (px CSS) a cui scorrere per ogni sezione. L'ultima sezione è
+// ancorata al fondo pagina in modo da coprirne la coda, anche se questo
+// comporta una sovrapposizione con la sezione precedente.
+function computeSectionOffsets(scrollHeight, viewportHeight) {
+  const total = Math.max(scrollHeight - viewportHeight, 0);
+  if (total <= 0) return [0];
+  const sections = Math.min(Math.ceil(total / viewportHeight) + 1, MAX_SCROLL_SECTIONS);
+  const offsets = [];
+  for (let i = 0; i < sections; i += 1) {
+    const y = i === sections - 1 ? scrollHeight - viewportHeight : i * viewportHeight;
+    if (offsets.length === 0 || y > offsets[offsets.length - 1]) {
+      offsets.push(y);
+    }
+  }
+  return offsets;
+}
+
+// Ricompone le sezioni catturate in un'unica immagine JPEG usando OffscreenCanvas
+// (disponibile nei service worker MV3). Riduce l'immagine se supera MAX_STITCH_HEIGHT_PX.
+async function stitchBitmaps(dataUrls, offsets, viewportHeight) {
+  const bitmaps = [];
+  for (const url of dataUrls) {
+    const blob = await (await fetch(url)).blob();
+    bitmaps.push(await createImageBitmap(blob));
+  }
+  const first = bitmaps[0];
+  // Rapporto tra pixel dell'immagine catturata e px CSS del viewport (devicePixelRatio).
+  const scaleY = first.height / viewportHeight;
+  const lastOffset = offsets[offsets.length - 1];
+  const stitchHeight = Math.round((lastOffset + viewportHeight) * scaleY);
+  let scale = 1;
+  if (stitchHeight > MAX_STITCH_HEIGHT_PX) {
+    scale = MAX_STITCH_HEIGHT_PX / stitchHeight;
+  }
+  const outW = Math.max(1, Math.round(first.width * scale));
+  const outH = Math.max(1, Math.round(stitchHeight * scale));
+  const canvas = new OffscreenCanvas(outW, outH);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, outW, outH);
+  for (let i = 0; i < bitmaps.length; i += 1) {
+    const b = bitmaps[i];
+    const y = Math.round(offsets[i] * scaleY * scale);
+    ctx.drawImage(b, 0, y, Math.round(b.width * scale), Math.round(b.height * scale));
+    b.close();
+  }
+  const outBlob = await canvas.convertToBlob({ type: "image/jpeg", quality: CAPTURE_QUALITY / 100 });
+  const buffer = await outBlob.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
+  return "data:image/jpeg;base64," + btoa(binary);
+}
+
+async function captureFullPage(tabId) {
+  const metrics = await getScrollMetrics(tabId);
+  if (metrics.scrollHeight <= metrics.viewportHeight) {
+    // Pagina più corta del viewport: nessuno scorrimento necessario.
+    const dataUrl = await chrome.tabs.captureVisibleTab({ format: "jpeg", quality: CAPTURE_QUALITY });
+    return { dataUrl, sections: 1, truncated: false };
+  }
+  const offsets = computeSectionOffsets(metrics.scrollHeight, metrics.viewportHeight);
+  const dataUrls = [];
+  try {
+    for (let i = 0; i < offsets.length; i += 1) {
+      await scrollToOffset(tabId, offsets[i]);
+      await sleep(SCROLL_WAIT_MS);
+      dataUrls.push(await chrome.tabs.captureVisibleTab({ format: "jpeg", quality: CAPTURE_QUALITY }));
+    }
+  } finally {
+    await restoreScroll(tabId, metrics.scrollX, metrics.scrollY);
+  }
+  const lastOffset = offsets[offsets.length - 1];
+  const truncated = lastOffset < metrics.scrollHeight - metrics.viewportHeight - 1;
+  const dataUrl = await stitchBitmaps(dataUrls, offsets, metrics.viewportHeight);
+  return { dataUrl, sections: offsets.length, truncated };
+}
+
+// ---------- Convalida e cattura ----------
+
+async function validateActiveTab() {
+  const store = await getStore();
+  if (!store.settings.apiKey) {
     await setStatus("error", "Nessuna chiave API configurata: apri le opzioni dell'estensione e inseriscila.");
     return { ok: false, error: "no-api-key" };
   }
@@ -169,17 +306,39 @@ async function handleCapture() {
     await setStatus("error", "Dominio bloccato per sicurezza (banca, pagamenti, login, password manager, webmail): nessuna cattura effettuata.");
     return { ok: false, error: "blocked-domain", hostname: url.hostname };
   }
+  return { ok: true, tab, url, settings: store.settings, store };
+}
 
-  await setStatus("capturing", "Cattura della scheda visibile in corso…");
+async function handleCapture(fullPage) {
+  const v = await validateActiveTab();
+  if (!v.ok) return v;
+  const tab = v.tab;
+  const url = v.url;
+  const settings = v.settings;
+
   let dataUrl;
-  try {
-    dataUrl = await chrome.tabs.captureVisibleTab({ format: "jpeg", quality: CAPTURE_QUALITY });
-  } catch (e) {
-    await setStatus("error", "Impossibile catturare questa scheda (pagina di sistema, finestra non visibile o permesso mancante).");
-    return { ok: false, error: "capture-failed" };
+  let captureMeta = { sections: 1, truncated: false };
+  if (fullPage) {
+    await setStatus("capturing", "Cattura a scorrimento della pagina intera in corso…");
+    try {
+      const r = await captureFullPage(tab.id);
+      dataUrl = r.dataUrl;
+      captureMeta = r;
+    } catch (e) {
+      await setStatus("error", "Cattura a scorrimento non riuscita: " + (e.message || "errore sconosciuto") + " Riprova con la cattura normale.");
+      return { ok: false, error: "capture-failed", message: e.message };
+    }
+  } else {
+    await setStatus("capturing", "Cattura della scheda visibile in corso…");
+    try {
+      dataUrl = await chrome.tabs.captureVisibleTab({ format: "jpeg", quality: CAPTURE_QUALITY });
+    } catch (e) {
+      await setStatus("error", "Impossibile catturare questa scheda (pagina di sistema, finestra non visibile o permesso mancante).");
+      return { ok: false, error: "capture-failed" };
+    }
   }
 
-  await setStatus("analyzing", "Trascrizione in corso via Mistral (modalita': " + settings.mode + ")…");
+  await setStatus("analyzing", "Trascrizione in corso via Mistral (modalita': " + settings.mode + "): (" + captureMeta.sections + " sezione" + (captureMeta.sections > 1 ? "i" : "") + ")…");
   const models = [];
   let text = "";
   try {
@@ -209,20 +368,24 @@ async function handleCapture() {
     hostname: url.hostname,
     mode: settings.mode,
     model: models.join(" + "),
+    fullPage: Boolean(fullPage),
+    sections: captureMeta.sections,
+    truncated: captureMeta.truncated,
     text
   };
+  const store = await getStore();
   store.records.push(record);
   store.stats.totalCaptured += 1;
   store.stats.totalTranscribed += 1;
   await chrome.storage.local.set({ records: store.records, stats: store.stats });
-  await setStatus("ok", "Trascrizione salvata in locale (" + text.length + " caratteri, modello: " + record.model + ").");
+  await setStatus("ok", "Trascrizione salvata in locale (" + text.length + " caratteri, modello: " + record.model + ", sezioni: " + record.sections + (record.truncated ? ", pagina troncata" : "") + ").");
   return { ok: true, record };
 }
 
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   if (!msg || !msg.type) return undefined;
   if (msg.type === "capture") {
-    handleCapture()
+    handleCapture(Boolean(msg.fullPage))
       .then((r) => sendResponse(r))
       .catch((e) => sendResponse({ ok: false, error: "internal", message: String((e && e.message) || e) }));
     return true;

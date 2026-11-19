@@ -1,5 +1,6 @@
 const statusEl = document.getElementById("status");
 const captureBtn = document.getElementById("captureBtn");
+const captureScrollBtn = document.getElementById("captureScrollBtn");
 const resultEl = document.getElementById("result");
 const countsEl = document.getElementById("counts");
 const optionsBtn = document.getElementById("optionsBtn");
@@ -30,18 +31,24 @@ async function refresh() {
   }
 }
 
-captureBtn.addEventListener("click", async () => {
+async function runCapture(fullPage) {
+  const btn = fullPage ? captureScrollBtn : captureBtn;
+  if (btn) btn.disabled = true;
   captureBtn.disabled = true;
+  captureScrollBtn.disabled = true;
   resultEl.textContent = "";
   statusEl.dataset.state = "capturing";
-  statusEl.textContent = "Cattura e analisi in corso…";
+  statusEl.textContent = fullPage
+    ? "Cattura a scorrimento e analisi in corso…"
+    : "Cattura e analisi in corso…";
   try {
-    const res = await chrome.runtime.sendMessage({ type: "capture" });
+    const res = await chrome.runtime.sendMessage({ type: "capture", fullPage: Boolean(fullPage) });
     if (res && res.ok) {
       const r = res.record;
       resultEl.textContent =
         "Salvato: " + r.hostname + " — " + (r.title || "(senza titolo)") +
-        " (" + r.text.length + " caratteri, modello: " + r.model + ")";
+        " (" + r.text.length + " caratteri, modello: " + r.model +
+        (r.sections > 1 ? ", " + r.sections + " sezioni" + (r.truncated ? " (pagina troncata)" : "") : "") + ")";
     } else {
       resultEl.textContent =
         "Operazione non riuscita: " + ((res && (res.message || res.error)) || "errore sconosciuto");
@@ -50,9 +57,13 @@ captureBtn.addEventListener("click", async () => {
     resultEl.textContent = "Errore: " + e.message;
   } finally {
     captureBtn.disabled = false;
+    captureScrollBtn.disabled = false;
     await refresh();
   }
-});
+}
+
+captureBtn.addEventListener("click", () => runCapture(false));
+captureScrollBtn.addEventListener("click", () => runCapture(true));
 
 chatBtn.addEventListener("click", async () => {
   try {
