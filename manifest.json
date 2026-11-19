@@ -1,10 +1,17 @@
 {
   "manifest_version": 3,
   "name": "Browser Recorder (on-demand)",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Cattura e trascrive la pagina corrente SOLO su richiesta esplicita dell'utente, usando esclusivamente le API di Mistral. Nessuna registrazione continua in background.",
-  "permissions": ["tabs", "storage", "activeTab"],
-  "host_permissions": ["https://api.mistral.ai/*"],
+  "permissions": [
+    "tabs",
+    "storage",
+    "activeTab",
+    "sidePanel"
+  ],
+  "host_permissions": [
+    "https://api.mistral.ai/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
@@ -12,5 +19,8 @@
     "default_popup": "popup.html",
     "default_title": "Browser Recorder"
   },
-  "options_page": "options.html"
+  "options_page": "options.html",
+  "side_panel": {
+    "default_path": "chat.html"
+  }
 }

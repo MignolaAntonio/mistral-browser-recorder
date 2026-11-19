@@ -3,6 +3,7 @@ const captureBtn = document.getElementById("captureBtn");
 const resultEl = document.getElementById("result");
 const countsEl = document.getElementById("counts");
 const optionsBtn = document.getElementById("optionsBtn");
+const chatBtn = document.getElementById("chatBtn");
 
 function renderState(state) {
   const s = state.lastStatus || { state: "idle", message: "Pronto." };
@@ -50,6 +51,18 @@ captureBtn.addEventListener("click", async () => {
   } finally {
     captureBtn.disabled = false;
     await refresh();
+  }
+});
+
+chatBtn.addEventListener("click", async () => {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    await chrome.sidePanel.open({ windowId: tab.windowId });
+    window.close();
+  } catch (e) {
+    // Fallback: apri la chat in una scheda se il pannello non è disponibile
+    chrome.tabs.create({ url: chrome.runtime.getURL("chat.html") });
+    window.close();
   }
 });
 
